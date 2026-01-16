@@ -26,8 +26,8 @@ COPY *.pdf ./
 # Expose port
 EXPOSE 8000
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
+# Health check - Allow 15 minutes for index building on first run
+HEALTHCHECK --interval=30s --timeout=10s --start-period=900s --retries=3 \
     CMD python -c "import requests; requests.get('http://localhost:8000/health')"
 
 # Build index if not exists, then run API
