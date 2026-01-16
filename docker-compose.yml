@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  cameroon-laws-api:
+    build: .
+    container_name: cameroon_laws_rag
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./index_file.index:/app/index_file.index
+      - ./index_file.meta.json:/app/index_file.meta.json
+      - ./index_file.chunks.json:/app/index_file.chunks.json
+    environment:
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8000/health" ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
