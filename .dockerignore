@@ -23,9 +23,6 @@ Thumbs.db
 .gitignore
 
 # Existing index files (will be built in container)
-index_file.index
-index_file.meta.json
-index_file.chunks.json
 
 # Logs
 *.log
