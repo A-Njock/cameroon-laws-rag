@@ -20,7 +20,12 @@ COPY RAG.py .
 COPY build_index.py .
 COPY api_server.py .
 
-# Copy PDF files
+# Copy pre-built FAISS index (built in Colab)
+COPY index_file.index .
+COPY index_file.meta.json .
+COPY index_file.meta.chunks.json .
+
+# Copy PDF files (fallback if index needs rebuild)
 COPY *.pdf ./
 
 # Expose port

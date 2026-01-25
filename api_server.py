@@ -54,7 +54,7 @@ async def startup_event():
     
     index_path = "index_file.index"
     metadata_path = "index_file.meta.json"
-    chunks_path = "index_file.chunks.json"
+    chunks_path = "index_file.meta.chunks.json"
     
     if not all(os.path.exists(p) for p in [index_path, metadata_path, chunks_path]):
         raise RuntimeError(
