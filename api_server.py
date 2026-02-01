@@ -4,11 +4,24 @@ FastAPI server for Cameroon Laws RAG System
 
 # CRITICAL: Mock torchvision BEFORE any other imports to prevent transformers crash
 import sys
-from unittest.mock import MagicMock
-sys.modules["torchvision"] = MagicMock()
-sys.modules["torchvision.ops"] = MagicMock()
-sys.modules["torchvision.transforms"] = MagicMock()
-sys.modules["torchvision._meta_registrations"] = MagicMock()
+import importlib.util
+from types import ModuleType
+
+# Create a proper mock module with __spec__ to pass importlib checks
+class FakeTorchvision(ModuleType):
+    def __init__(self, name):
+        super().__init__(name)
+        self.__spec__ = importlib.util.spec_from_loader(name, loader=None)
+        self.__path__ = []
+        self.__file__ = None
+    def __getattr__(self, name):
+        return FakeTorchvision(f"{self.__name__}.{name}")
+
+# Install fake torchvision before anything else imports it
+sys.modules["torchvision"] = FakeTorchvision("torchvision")
+sys.modules["torchvision.ops"] = FakeTorchvision("torchvision.ops")
+sys.modules["torchvision.transforms"] = FakeTorchvision("torchvision.transforms")
+sys.modules["torchvision._meta_registrations"] = FakeTorchvision("torchvision._meta_registrations")
 
 import os
 from typing import Optional, List, Dict, Any
