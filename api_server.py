@@ -2,6 +2,14 @@
 FastAPI server for Cameroon Laws RAG System
 """
 
+# CRITICAL: Mock torchvision BEFORE any other imports to prevent transformers crash
+import sys
+from unittest.mock import MagicMock
+sys.modules["torchvision"] = MagicMock()
+sys.modules["torchvision.ops"] = MagicMock()
+sys.modules["torchvision.transforms"] = MagicMock()
+sys.modules["torchvision._meta_registrations"] = MagicMock()
+
 import os
 from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, HTTPException
