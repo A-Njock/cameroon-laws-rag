@@ -154,13 +154,24 @@ Document text:
     def _fallback_chunking(self, document_text: str) -> Tuple[List[str], List[Dict[str, Any]]]:
         """
         Heuristic fallback: split on ARTICLE headings; attempt to infer article number and use default_law.
+        Handles both numeric articles (Article 1) and French ordinals (Article premier, Article unique).
+        Also handles FAQ-style documents that don't follow standard article format.
         """
         law_reference = self.default_law or infer_law_reference(document_text, None)
         text = (document_text or "").replace("\r\n", "\n")
+        
+        # French ordinal words that can follow "Article"
+        french_ordinals = r"(?:premier|unique|deux|trois|quatre|cinq|six|sept|huit|neuf|dix|onze|douze|treize|quatorze|quinze|seize|premier|première|deuxième|troisième|quatrième|cinquième|sixième|septième|huitième|neuvième|dixième)"
+        
+        # Pattern matches: Article 1, Article premier, ARTICLE UNIQUE, etc.
+        article_pattern = rf"(?:\n|\A)\s*((?:ARTICLE|Article|article)\s+(?:\d+|{french_ordinals}))\b"
+        
         # Split while keeping delimiters
-        parts = re.split(r"(?:\n|\A)\s*((?:ARTICLE|Article)\s+\d+)\b", text)
+        parts = re.split(article_pattern, text, flags=re.IGNORECASE)
+        
+        # If no articles found, check if this is a FAQ-style document
         if len(parts) <= 1:
-            return [text.strip()], [{"article": "Unknown", "law": law_reference}]
+            return self._chunk_faq_document(text, law_reference)
 
         chunks: List[str] = []
         metadata: List[Dict[str, Any]] = []
@@ -168,13 +179,71 @@ Document text:
         for i in range(1, len(parts), 2):
             label = parts[i].strip()
             body = parts[i + 1] if i + 1 < len(parts) else ""
-            art_num_match = re.search(r"(?:ARTICLE|Article)\s+(\d+)", label)
-            article_number = f"Article {art_num_match.group(1)}" if art_num_match else label
+            # Extract article identifier (numeric or ordinal)
+            art_match = re.search(rf"(?:ARTICLE|Article|article)\s+(\d+|{french_ordinals})", label, re.IGNORECASE)
+            if art_match:
+                art_id = art_match.group(1)
+                # Normalize French ordinals to standard format
+                ordinal_map = {"premier": "1er", "première": "1ère", "unique": "unique", 
+                               "deux": "2", "trois": "3", "quatre": "4", "cinq": "5",
+                               "six": "6", "sept": "7", "huit": "8", "neuf": "9", "dix": "10"}
+                normalized = ordinal_map.get(art_id.lower(), art_id)
+                article_number = f"Article {normalized}"
+            else:
+                article_number = label
             chunks.append(body.strip())
             metadata.append({"article": article_number, "law": law_reference})
 
         print(f"[Fallback] Extracted {len(chunks)} chunks.")
         return chunks, metadata
+
+    def _chunk_faq_document(self, text: str, law_reference: str) -> Tuple[List[str], List[Dict[str, Any]]]:
+        """
+        Handle FAQ-style documents that don't have standard Article structure.
+        Splits on Q&A patterns or paragraph breaks.
+        """
+        chunks: List[str] = []
+        metadata: List[Dict[str, Any]] = []
+        
+        # Try to split on Q&A patterns (Question:, Q:, FAQ, numbered questions, etc.)
+        qa_pattern = r"(?:\n|^)\s*(?:Q(?:uestion)?[\s:\.]*\d*[\s:\.]|FAQ[\s:\.]*\d*[\s:\.]|\d+[\.\)]\s+[A-Z])"
+        qa_parts = re.split(qa_pattern, text, flags=re.IGNORECASE)
+        
+        if len(qa_parts) > 1:
+            # Found Q&A structure
+            for i, part in enumerate(qa_parts):
+                if part.strip():
+                    chunks.append(part.strip())
+                    metadata.append({"article": f"FAQ {i+1}", "law": law_reference})
+            print(f"[FAQ Chunking] Extracted {len(chunks)} Q&A chunks.")
+            return chunks, metadata
+        
+        # Fallback: split by paragraphs (double newlines) with minimum length
+        paragraphs = re.split(r"\n\s*\n", text)
+        current_chunk = ""
+        chunk_count = 0
+        
+        for para in paragraphs:
+            para = para.strip()
+            if not para:
+                continue
+            current_chunk += "\n\n" + para if current_chunk else para
+            # Create chunk when it reaches reasonable size (500+ chars)
+            if len(current_chunk) > 500:
+                chunk_count += 1
+                chunks.append(current_chunk.strip())
+                metadata.append({"article": f"Section {chunk_count}", "law": law_reference})
+                current_chunk = ""
+        
+        # Add remaining content
+        if current_chunk.strip():
+            chunk_count += 1
+            chunks.append(current_chunk.strip())
+            metadata.append({"article": f"Section {chunk_count}", "law": law_reference})
+        
+        print(f"[Paragraph Chunking] Extracted {len(chunks)} sections.")
+        return chunks if chunks else [text.strip()], metadata if metadata else [{"article": "Document", "law": law_reference}]
+
 
     def _build_vector_store(self):
         embeddings = self.embedding_model.encode(self.chunks)
