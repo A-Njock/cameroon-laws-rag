@@ -17,7 +17,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # DeepSeek configuration
-api_key_deepseek = "sk-941d68a6421e4c3cb2bb17f4e53d258a"
+api_key_deepseek = os.environ.get("DEEPSEEK_API_KEY")
 base_url_deepseek = "https://api.deepseek.com/v1"
 
 

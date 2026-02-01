@@ -9,10 +9,14 @@ RUN apt-get update && apt-get install -y \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
 
+# Install CPU-only PyTorch first (Significant size reduction)
+RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+
 # Copy requirements
 COPY requirements_docker.txt .
 
 # Install Python dependencies
+# Note: sentence-transformers will use the already installed torch
 RUN pip install --no-cache-dir -r requirements_docker.txt
 
 # Copy application code
@@ -25,7 +29,7 @@ COPY index_file.index .
 COPY index_file.meta.json .
 COPY index_file.meta.chunks.json .
 
-# Copy PDF files (fallback if index needs rebuild)
+# Copy only necessary PDF source files (Avoid copying huge unrelated folders if any)
 COPY *.pdf ./
 
 # Expose port
