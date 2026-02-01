@@ -21,7 +21,14 @@ class FakeTorchvision(ModuleType):
 sys.modules["torchvision"] = FakeTorchvision("torchvision")
 sys.modules["torchvision.ops"] = FakeTorchvision("torchvision.ops")
 sys.modules["torchvision.transforms"] = FakeTorchvision("torchvision.transforms")
+sys.modules["torchvision.transforms.v2"] = FakeTorchvision("torchvision.transforms.v2")
+sys.modules["torchvision.transforms.v2.functional"] = FakeTorchvision("torchvision.transforms.v2.functional")
+sys.modules["torchvision.transforms.functional"] = FakeTorchvision("torchvision.transforms.functional")
 sys.modules["torchvision._meta_registrations"] = FakeTorchvision("torchvision._meta_registrations")
+sys.modules["torchvision.io"] = FakeTorchvision("torchvision.io")
+sys.modules["torchvision.models"] = FakeTorchvision("torchvision.models")
+sys.modules["torchvision.datasets"] = FakeTorchvision("torchvision.datasets")
+sys.modules["torchvision.utils"] = FakeTorchvision("torchvision.utils")
 
 import os
 from typing import Optional, List, Dict, Any
