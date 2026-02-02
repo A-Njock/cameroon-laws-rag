@@ -560,7 +560,9 @@ For each sub-issue:
   • Clear legal section headers
   • Bullet points or numbered steps where appropriate
   • Progressive depth (overview → provisions → implications)
-- Reference relevant legal articles using [1], [2], etc. matching the provided context numbers.
+- Reference relevant legal articles using [1], [2], etc. matching the provided context numbers. 
+- ALWAYS use [X] notation at the end of a sentence or claim.
+- CRITICAL: Do NOT say "Article 91 of Law X", instead say "Under Article 91... [1]".
 - Use precise legal terminology consistent with the source text.
 
 ────────────────────────────
@@ -570,6 +572,7 @@ For each sub-issue:
 - Avoid metaphors, rhetoric, or persuasive language.
 - Use plain, formal legal language suitable for non-specialists.
 - Do not provide legal advice beyond what is explicitly stated in the law.
+- IMPORTANT: Ensure the final output is clean markdown.
 - Respond in the same language as the user's question (French or English).
 
 ────────────────────────────
@@ -582,7 +585,11 @@ For each sub-issue:
 - Never hallucinate articles, rights, obligations, or procedures.
 
 Output ONLY the final structured answer.
-Do not reveal internal reasoning, chain-of-thought, or intermediate analysis."""
+Do not use headers like "Direct Answer" or "Analysis". Just provide the legal content.
+Do not reveal internal reasoning, chain-of-thought, or intermediate analysis.
+At the very end of your response, the system will automatically append the Sources section. Do NOT include a "Sources" list yourself.
+"""
+
 
 
     def _format_sources_section(self, references):

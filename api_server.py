@@ -123,20 +123,24 @@ async def health_check():
 
 
 @app.post("/query", response_model=QueryResponse)
-async def query_laws(request: QueryRequest):
+@app.post("/ask", response_model=QueryResponse)
+async def query_laws_api(request: QueryRequest):
     """
     Query the Cameroon laws database (Synchronous)
+    Supports both /query and /ask endpoints.
     """
     if rag_system is None:
         raise HTTPException(status_code=503, detail="RAG system not initialized")
     
     try:
         # Generate answer and get metadatas in ONE call
+        # Note: we use request.question for /query and request.query for legacy /ask if needed
+        # But we'll use a unified QueryRequest model for now.
         answer, metadatas = rag_system.generate_response(request.question)
         
         sources = []
         seen = set()
-        for meta in metadatas[:request.top_k]:
+        for meta in metadatas:
             law = meta.get('law', 'Unknown')
             article = meta.get('article', 'Unknown')
             key = f"{law}_{article}"
@@ -145,19 +149,20 @@ async def query_laws(request: QueryRequest):
                 sources.append({
                     "law": law,
                     "article": article,
-                    "citation": f"{article} de {law}"
+                    "citation": f"{article} - {law}"
                 })
                 seen.add(key)
         
         return QueryResponse(
             answer=answer,
-            sources=sources
+            sources=sources[:request.top_k]
         )
     
     except Exception as e:
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
+
 
 
 from fastapi.responses import StreamingResponse
