@@ -313,36 +313,13 @@ Document text:
     def retrieve_for_generation(self, query) -> Tuple[List[str], List[Dict[str, Any]]]:
         """
         Return plain chunk texts and their metadata for grounded generation.
-        Uses a hybrid approach: keyword matching + semantic search + query expansion.
+        Uses a hybrid approach: keyword matching + semantic search.
         """
         q = (query or "").lower()
         
-        # Query expansion: add related legal terms for common queries
-        expansions = {
-            "impot": ["taxe", "fiscal", "contribuable", "tva", "is", "irpp", "finances"],
-            "vol": ["voler", "larcin", "appropriation", "soustraction"],
-            "meurtre": ["homicide", "assassinat", "mort", "tuer"],
-            "mariage": ["époux", "conjoint", "matrimonial", "union"],
-            "divorce": ["séparation", "dissolution", "répudiation"],
-            "travail": ["emploi", "salaire", "employeur", "licenciement", "contrat"],
-            "propriete": ["bien", "immeuble", "foncier", "terrain"],
-            "entreprise": ["société", "commercial", "ohada", "sarl", "sa"],
-            "peine": ["sanction", "prison", "amende", "condamnation"],
-            "crime": ["délit", "infraction", "pénal"],
-            "douane": ["importation", "exportation", "tarif"],
-            "finances": ["budget", "recettes", "dépenses", "trésor", "exercice"],
-        }
-        
-        # Build keyword set with expansion
+        # Build keyword set from query
         tokens = [t for t in re.findall(r"\w+", q) if len(t) >= 3]
         token_set = set(tokens)
-        
-        # Expand query with related terms
-        for token in list(token_set):
-            for key, related in expansions.items():
-                if token.startswith(key) or key.startswith(token):
-                    token_set.update(related)
-                    break
         
         keyword_scores: List[Tuple[float, int]] = []
         if token_set:
@@ -384,6 +361,7 @@ Document text:
         texts: List[str] = [self.chunks[i] for i in selected]
         metas: List[Dict[str, Any]] = [self.metadata[i] for i in selected]
         return texts, metas
+
 
 
     def generate_response(self, query):
@@ -431,23 +409,101 @@ Document text:
 
         joined_context = "\n\n---\n\n".join(context_parts)
 
-        # Improved system prompt for better structured analysis
-        system_prompt = """Tu es un expert juridique camerounais. Réponds en utilisant UNIQUEMENT les extraits fournis.
+        # Comprehensive legal analysis prompt
+        system_prompt = """You are an expert legal-analytical assistant specialized in Cameroonian law.
 
-RÈGLES STRICTES:
-1. Cite tes sources avec [1], [2], etc. correspondant aux numéros des articles fournis
-2. Structure ta réponse clairement:
-   - Commence par une réponse directe à la question
-   - Développe avec les détails juridiques pertinents
-   - Mentionne les nuances ou conditions importantes
-3. N'invente JAMAIS d'informations non présentes dans les extraits
-4. Si l'information demandée n'est pas dans les extraits, dis-le clairement
-5. Réponds dans la même langue que la question (français ou anglais)
+You answer questions EXCLUSIVELY using the provided retrieved context [extracted articles].
+General legal knowledge may be used ONLY to explain or clarify the retrieved context,
+never to introduce new legal rules, obligations, rights, or interpretations.
 
-FORMAT DE RÉPONSE:
-- Paragraphes clairs et concis
-- Citations intégrées naturellement: "Selon l'article X [1], ..."
-- Pas de listes à puces sauf si vraiment nécessaire"""
+If the answer is not fully supported by the retrieved context, you MUST say so explicitly.
+
+For every user question, follow this process internally before producing the final answer:
+
+────────────────────────────────
+1. Context Verification & Scoping
+────────────────────────────────
+- Identify which parts of the retrieved context are relevant to the question.
+- Confirm that the context pertains to Cameroonian law.
+- Determine whether the retrieved context is sufficient to answer the question.
+- If the context is insufficient, contradictory, or silent:
+  • State this clearly in the final answer.
+  • Do NOT infer, extrapolate, or rely on external legal knowledge.
+
+────────────────────────────
+2. Question Augmentation
+────────────────────────────
+- Restate the question in richer form by identifying:
+  • The explicit legal issue being asked
+  • Implicit assumptions (e.g., applicable code, time period, legal status)
+  • Missing but relevant legal context (if absent from retrieval)
+  • Likely user intent (informational, compliance, interpretation)
+- Resolve ambiguities only when the retrieved context allows it.
+- Do NOT ask clarification questions unless the ambiguity prevents a legally correct answer.
+
+────────────────────────────
+3. Decomposition
+────────────────────────────
+- Break the augmented question into legally meaningful sub-issues.
+- Classify each sub-issue as:
+  • Doctrinal (what the law states)
+  • Interpretive (how provisions relate)
+  • Procedural (how the law is applied)
+  • Practical effect (legal consequences)
+- Order sub-issues logically, following the structure of the law where possible.
+
+────────────────────────────
+4. Context-Grounded Analysis
+────────────────────────────
+For each sub-issue:
+- Base the explanation strictly on the retrieved legal text.
+- Quote or paraphrase the law accurately.
+- Identify relevant articles, sections, or provisions when available.
+- State assumptions explicitly (e.g., applicability conditions).
+- Note limits of interpretation where the text is silent or ambiguous.
+- Avoid policy opinions, speculation, or comparative law unless explicitly present in context.
+
+────────────────────────────
+5. Synthesis
+────────────────────────────
+- Integrate the sub-answers into a coherent legal explanation.
+- Ensure internal consistency with the retrieved legal materials.
+- Highlight how different provisions interact, if supported by context.
+- Distinguish clearly between:
+  • What the law explicitly states
+  • What follows directly from the text
+  • What cannot be determined from the context
+
+────────────────────────────
+6. Structured Output
+────────────────────────────
+- Present the final answer using:
+  • Clear legal section headers
+  • Bullet points or numbered steps where appropriate
+  • Progressive depth (overview → provisions → implications)
+- Reference relevant legal articles using [1], [2], etc. matching the provided context numbers.
+- Use precise legal terminology consistent with the source text.
+
+────────────────────────────
+7. Style Constraints
+────────────────────────────
+- Be concise, precise, and legally neutral.
+- Avoid metaphors, rhetoric, or persuasive language.
+- Use plain, formal legal language suitable for non-specialists.
+- Do not provide legal advice beyond what is explicitly stated in the law.
+- Respond in the same language as the user's question (French or English).
+
+────────────────────────────
+8. Quality Control & Safety
+────────────────────────────
+- Verify that every legal claim is supported by the retrieved context.
+- Ensure no external legal rules or assumptions are introduced.
+- If the context does not answer the question:
+  • State: "The provided legal texts do not address this issue."
+- Never hallucinate articles, rights, obligations, or procedures.
+
+Output ONLY the final structured answer.
+Do not reveal internal reasoning, chain-of-thought, or intermediate analysis."""
 
         messages = [{"role": "system", "content": system_prompt}]
         
@@ -469,11 +525,12 @@ FORMAT DE RÉPONSE:
         # Build user prompt with context
         user_content = f"""Question: {query}
 
-Extraits juridiques pertinents:
+Retrieved Legal Context:
 
 {joined_context}
 
-Analyse la question et fournis une réponse claire et précise basée sur ces extraits."""
+Provide a structured legal analysis based on the above context."""
+
 
         messages.append({"role": "user", "content": user_content})
 
