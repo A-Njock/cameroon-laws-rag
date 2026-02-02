@@ -125,22 +125,14 @@ async def health_check():
 @app.post("/query", response_model=QueryResponse)
 async def query_laws(request: QueryRequest):
     """
-    Query the Cameroon laws database
-    
-    Examples:
-    - "Que dit l'article 7 de la loi N°2016-007?"
-    - "Quelles sont les peines pour fraude?"
-    - "Code pénal article 15"
+    Query the Cameroon laws database (Synchronous)
     """
     if rag_system is None:
         raise HTTPException(status_code=503, detail="RAG system not initialized")
     
     try:
-        # Generate answer
-        answer = rag_system.generate_response(request.question)
-        
-        # Extract sources from metadata
-        _, metadatas = rag_system.retrieve_for_generation(request.question)
+        # Generate answer and get metadatas in ONE call
+        answer, metadatas = rag_system.generate_response(request.question)
         
         sources = []
         seen = set()
@@ -163,7 +155,30 @@ async def query_laws(request: QueryRequest):
         )
     
     except Exception as e:
+        import traceback
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
+
+
+from fastapi.responses import StreamingResponse
+
+@app.post("/stream")
+async def stream_laws(request: QueryRequest):
+    """
+    Stream the legal analysis in real-time
+    """
+    if rag_system is None:
+        raise HTTPException(status_code=503, detail="RAG system not initialized")
+
+    def event_generator():
+        try:
+            for part in rag_system.generate_response_stream(request.question):
+                yield part
+        except Exception as e:
+            yield f"\n\n[ERREUR]: {str(e)}"
+
+    return StreamingResponse(event_generator(), media_type="text/plain")
+
 
 
 @app.get("/laws", response_model=List[str])

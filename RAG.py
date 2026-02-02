@@ -90,6 +90,20 @@ class RobustRAGSystem:
 
         self.chunks, self.metadata = self._intelligent_chunking(document_text)
         self._build_vector_store()
+        self._build_token_map()
+
+    def _build_token_map(self):
+        """Pre-calculate token map for faster O(1) keyword search."""
+        self.token_map = [] # List of dicts: map token -> count for each chunk
+        for text in self.chunks:
+            # Simple tokenization: lower and split on non-alphanumeric
+            tokens = re.findall(r"\w+", text.lower())
+            counts = {}
+            for t in tokens:
+                if len(t) >= 3:
+                    counts[t] = counts.get(t, 0) + 1
+            self.token_map.append(counts)
+        print(f"✓ Token map built for {len(self.chunks)} chunks")
     
     @classmethod
     def from_index(cls, index_path: str, metadata_path: str, chunks_path: str,
@@ -97,23 +111,26 @@ class RobustRAGSystem:
         """
         Create a RAG instance from a prebuilt FAISS index and saved metadata/chunks.
         """
-        # Create a dummy instance without building from a document
+        # Create instance without calling __init__ directly to avoid re-chunking
         instance = cls.__new__(cls)
         instance.api_key = "DEEPSEEK_ONLY"
         instance.embedding_model = SentenceTransformer(embedding_model)
         instance.top_k = top_k
-        instance.faiss_dim = None
+        instance.faiss_dim = 384
         instance.history = []
         instance.default_law = None
+        
         # Load index, metadata, and chunks
         instance.index = faiss.read_index(index_path)
         with open(metadata_path, "r", encoding="utf-8") as f:
             instance.metadata = json.load(f)
         with open(chunks_path, "r", encoding="utf-8") as f:
             instance.chunks = json.load(f)
-        # Embeddings not required; FAISS index already built
+            
         instance.embeddings = None
+        instance._build_token_map() # ESSENTIAL for optimized search
         return instance
+
 
     def _intelligent_chunking(self, document_text):
         """
@@ -323,12 +340,23 @@ Document text:
         
         keyword_scores: List[Tuple[float, int]] = []
         if token_set:
-            for i, text in enumerate(self.chunks):
-                t = text.lower()
-                # Count matches with weight for longer tokens
-                score = sum(t.count(tok) * (1 + len(tok) / 10) for tok in token_set)
-                if score > 0:
-                    keyword_scores.append((score, i))
+            if hasattr(self, "token_map") and self.token_map:
+                # OPTIMIZED: Use pre-calculated token map
+                for i, counts in enumerate(self.token_map):
+                    score = 0.0
+                    for tok in token_set:
+                        count = counts.get(tok, 0)
+                        if count > 0:
+                            score += count * (1 + len(tok) / 10)
+                    if score > 0:
+                        keyword_scores.append((score, i))
+            else:
+                # Fallback for old instances
+                for i, text in enumerate(self.chunks):
+                    t = text.lower()
+                    score = sum(t.count(tok) * (1 + len(tok) / 10) for tok in token_set)
+                    if score > 0:
+                        keyword_scores.append((score, i))
         
         # Also do semantic search
         query_embedding = self.embedding_model.encode([query])
@@ -365,14 +393,62 @@ Document text:
 
 
     def generate_response(self, query):
-        """
-        Generate a well-formatted response with proper citations and source references.
-        """
-        # Use structured retrieval for grounded answer and deterministic metadata formatting
+        """Generate response and return both text and sources for internal use."""
         chunk_texts, chunk_metas = self.retrieve_for_generation(query)
-
         if not chunk_texts:
-            return """Je n'ai pas trouvé d'informations pertinentes pour cette question dans la base de données juridique.
+            return self._get_empty_result(), []
+        
+        # Prepare context and prompt
+        messages, references = self._prepare_llm_input(query, chunk_texts, chunk_metas)
+        
+        # Sync completion
+        ds_prompt = "System:\n" + messages[0]["content"] + "\n\n" + "\n\n".join([m["content"] for m in messages[1:]])
+        analysis = openai_completion(ds_prompt, model="deepseek-chat", temperature=0.3, max_tokens=800)
+        
+        # Combine with sources
+        answer = analysis.strip() + self._format_sources_section(references)
+        
+        # Update history
+        self.history.append({"role": "user", "content": query})
+        self.history.append({"role": "assistant", "content": answer})
+        return answer, chunk_metas
+
+    def generate_response_stream(self, query):
+        """Generator that yields chunks of the response in real-time."""
+        chunk_texts, chunk_metas = self.retrieve_for_generation(query)
+        if not chunk_texts:
+            yield self._get_empty_result()
+            return
+
+        messages, references = self._prepare_llm_input(query, chunk_texts, chunk_metas)
+        ds_prompt = "System:\n" + messages[0]["content"] + "\n\n" + "\n\n".join([m["content"] for m in messages[1:]])
+        
+        # Streaming completion
+        client = initialize_openai_client()
+        response = client.chat.completions.create(
+            messages=[{"role": "user", "content": ds_prompt}],
+            model="deepseek-chat",
+            temperature=0.3,
+            max_tokens=800,
+            stream=True
+        )
+        
+        full_text = ""
+        for part in response:
+            delta = part.choices[0].delta.content or ""
+            full_text += delta
+            yield delta
+            
+        # Append sources at the end
+        sources_text = self._format_sources_section(references)
+        yield sources_text
+        
+        # Update history
+        self.history.append({"role": "user", "content": query})
+        self.history.append({"role": "assistant", "content": full_text + sources_text})
+
+    def _get_empty_result(self) -> str:
+        return """Je n'ai pas trouvé d'informations pertinentes pour cette question dans la base de données juridique.
 
 **Suggestions:**
 - Reformulez votre question avec des termes juridiques précis
@@ -381,9 +457,11 @@ Document text:
 
 *Cet outil est développé par Pierre Guy A. NJOCK - Des améliorations continues sont en cours.*"""
 
-        # Build numbered references for citations
+    def _prepare_llm_input(self, query, chunk_texts, chunk_metas):
+        # Refactored common logic for prompt building
         references = []
-        ref_map = {}  # Map "Article X of Law Y" -> reference number
+        ref_map = {}
+        context_parts = []
         for i, meta in enumerate(chunk_metas):
             art = meta.get("article", "Article inconnu")
             law = meta.get("law", "Loi inconnue")
@@ -391,26 +469,27 @@ Document text:
             if ref_key not in ref_map:
                 ref_num = len(references) + 1
                 ref_map[ref_key] = ref_num
-                references.append({
-                    "num": ref_num,
-                    "article": art,
-                    "law": law,
-                    "is_primary": i == 0
-                })
-
-        # Build context with citation markers for the LLM
-        context_parts = []
-        for i, (text, meta) in enumerate(zip(chunk_texts, chunk_metas)):
-            art = meta.get("article", "Article inconnu")
-            law = meta.get("law", "Loi inconnue")
-            ref_key = f"{art} - {law}"
-            ref_num = ref_map.get(ref_key, i + 1)
-            context_parts.append(f"[{ref_num}] {art} ({law}):\n{text}")
-
+                references.append({"num": ref_num, "article": art, "law": law, "is_primary": i == 0})
+            ref_num = ref_map[ref_key]
+            context_parts.append(f"[{ref_num}] {art} ({law}):\n{chunk_texts[i]}")
+        
         joined_context = "\n\n---\n\n".join(context_parts)
+        
+        # Re-use the system_prompt snippet but shortened logic for brevity in code
+        system_prompt = self._get_system_prompt()
+        messages = [{"role": "system", "content": system_prompt}]
+        
+        # Include history
+        recent = self.history[-6:]
+        for msg in recent:
+            messages.append(msg) # Simplification: assume history is filtered if needed
 
-        # Comprehensive legal analysis prompt
-        system_prompt = """You are an expert legal-analytical assistant specialized in Cameroonian law.
+        user_content = f"Question: {query}\n\nRetrieved Legal Context:\n\n{joined_context}\n\nProvide a structured legal analysis based on the above context."
+        messages.append({"role": "user", "content": user_content})
+        return messages, references
+
+    def _get_system_prompt(self):
+        return """You are an expert legal-analytical assistant specialized in Cameroonian law.
 
 You answer questions EXCLUSIVELY using the provided retrieved context [extracted articles].
 General legal knowledge may be used ONLY to explain or clarify the retrieved context,
@@ -505,71 +584,21 @@ For each sub-issue:
 Output ONLY the final structured answer.
 Do not reveal internal reasoning, chain-of-thought, or intermediate analysis."""
 
-        messages = [{"role": "system", "content": system_prompt}]
-        
-        # Include relevant conversation history
-        def relevance(a: str, b: str) -> float:
-            aw = set([w for w in re.findall(r"\w+", a.lower()) if len(w) >= 4])
-            bw = set([w for w in re.findall(r"\w+", b.lower()) if len(w) >= 4])
-            if not aw or not bw:
-                return 0.0
-            return len(aw & bw) / max(len(aw), len(bw))
-        
-        recent = self.history[-6:]
-        for msg in recent:
-            if msg["role"] == "user" and relevance(query, msg["content"]) >= 0.3:
-                messages.append(msg)
-            elif msg["role"] == "assistant":
-                messages.append(msg)
 
-        # Build user prompt with context
-        user_content = f"""Question: {query}
-
-Retrieved Legal Context:
-
-{joined_context}
-
-Provide a structured legal analysis based on the above context."""
-
-
-        messages.append({"role": "user", "content": user_content})
-
-        # Generate response
-        ds_prompt = (
-            "System:\n" + messages[0]["content"] + "\n\n" +
-            "\n\n".join([m["content"] for m in messages[1:]])
-        )
-        analysis = openai_completion(ds_prompt, model="deepseek-chat", temperature=0.3, max_tokens=800)
-
-        # Build formatted sources section
+    def _format_sources_section(self, references):
         primary_refs = [r for r in references if r["is_primary"]]
         supplementary_refs = [r for r in references if not r["is_primary"]]
-
         sources_section = "\n\n---\n\n**📚 Sources:**\n\n"
-        
-        # Primary source
         if primary_refs:
             p = primary_refs[0]
             sources_section += f"**Source principale:**\n[{p['num']}] {p['article']} - *{p['law']}*\n\n"
-        
-        # Supplementary sources
         if supplementary_refs:
             sources_section += "**Sources complémentaires:**\n"
-            for r in supplementary_refs[:5]:  # Limit to 5 supplementary
+            for r in supplementary_refs[:5]:
                 sources_section += f"[{r['num']}] {r['article']} - *{r['law']}*\n"
             sources_section += "\n"
-        
-        # Note about contradictory (would require semantic analysis)
         sources_section += "**Articles contradictoires:** Aucun identifié dans le contexte fourni."
-
-        # Combine answer with sources
-        answer = analysis.strip() + sources_section
-
-        # Update history
-        self.history.append({"role": "user", "content": query})
-        self.history.append({"role": "assistant", "content": answer})
-
-        return answer
+        return sources_section
 
 
 
