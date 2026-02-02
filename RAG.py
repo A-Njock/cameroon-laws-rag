@@ -42,6 +42,15 @@ def normalize_text_for_patterns(text: str) -> str:
 
 
 def infer_law_reference(document_text: str, filename: str | None) -> str:
+    # PRIORITY 1: Check filename first - it's more reliable than document text
+    if filename:
+        base = os.path.splitext(os.path.basename(filename))[0]
+        base = base.replace("_", " ").replace("-", " ").strip()
+        # If filename clearly indicates a law (LOI No, Loi N°, DECRET, etc.), use it
+        if re.search(r"(LOI\s+N[°o]?|Loi\s+N[°o]?|DECRET|Décret|ARRETE|Arrêté|ORDONNANCE)", base, re.IGNORECASE):
+            return base
+    
+    # PRIORITY 2: Fall back to document text patterns
     text = normalize_text_for_patterns(document_text)
     head = "\n".join(text.splitlines()[:80])
     patterns = [
@@ -59,11 +68,14 @@ def infer_law_reference(document_text: str, filename: str | None) -> str:
         m = re.search(pat, head, flags=re.IGNORECASE)
         if m:
             return m.group(1).strip()
+    
+    # PRIORITY 3: Use filename as fallback even if it doesn't match specific patterns
     if filename:
         base = os.path.splitext(os.path.basename(filename))[0]
         base = base.replace("_", " ").replace("-", " ").strip()
         if re.search(r"(loi|décret|decret|arr[ée]t[ée]|ordonnance|code)", base, re.IGNORECASE):
             return base
+    
     return "Unknown law reference"
 
 
@@ -160,8 +172,8 @@ Document text:
         law_reference = self.default_law or infer_law_reference(document_text, None)
         text = (document_text or "").replace("\r\n", "\n")
         
-        # French ordinal words that can follow "Article"
-        french_ordinals = r"(?:premier|unique|deux|trois|quatre|cinq|six|sept|huit|neuf|dix|onze|douze|treize|quatorze|quinze|seize|premier|première|deuxième|troisième|quatrième|cinquième|sixième|septième|huitième|neuvième|dixième)"
+        # French ordinal words that can follow "Article" - comprehensive list
+        french_ordinals = r"(?:premier|premi[eè]re|deuxi[eè]me|second|seconde|troisi[eè]me|quatri[eè]me|cinqui[eè]me|sixi[eè]me|septi[eè]me|huiti[eè]me|neuvi[eè]me|dixi[eè]me|onzi[eè]me|douzi[eè]me|treizi[eè]me|quatorzi[eè]me|quinzi[eè]me|seizi[eè]me|dix-septi[eè]me|dix-huiti[eè]me|dix-neuvi[eè]me|vingti[eè]me|unique|un|deux|trois|quatre|cinq|six|sept|huit|neuf|dix|onze|douze|treize|quatorze|quinze|seize)"
         
         # Pattern matches: Article 1, Article premier, ARTICLE UNIQUE, etc.
         article_pattern = rf"(?:\n|\A)\s*((?:ARTICLE|Article|article)\s+(?:\d+|{french_ordinals}))\b"
@@ -169,8 +181,21 @@ Document text:
         # Split while keeping delimiters
         parts = re.split(article_pattern, text, flags=re.IGNORECASE)
         
-        # If no articles found, check if this is a FAQ-style document
+        # If no articles found, try TITRE/CHAPITRE structure (common in finance laws)
         if len(parts) <= 1:
+            titre_pattern = r"(?:\n|\A)\s*((?:TITRE|CHAPITRE|SECTION|PARTIE)\s+(?:PREMIER|PREMI[ÈE]RE|I{1,3}|IV|V|VI|VII|VIII|IX|X|\d+|[A-Z]))\s*[:\-\.]?\s*\n"
+            titre_parts = re.split(titre_pattern, text, flags=re.IGNORECASE)
+            if len(titre_parts) > 1:
+                chunks: List[str] = []
+                metadata: List[Dict[str, Any]] = []
+                for i in range(1, len(titre_parts), 2):
+                    label = titre_parts[i].strip()
+                    body = titre_parts[i + 1] if i + 1 < len(titre_parts) else ""
+                    chunks.append(body.strip())
+                    metadata.append({"article": label, "law": law_reference})
+                print(f"[TITRE/CHAPITRE Chunking] Extracted {len(chunks)} chunks.")
+                return chunks, metadata
+            # If still no structure found, use FAQ-style document handling
             return self._chunk_faq_document(text, law_reference)
 
         chunks: List[str] = []
@@ -184,9 +209,24 @@ Document text:
             if art_match:
                 art_id = art_match.group(1)
                 # Normalize French ordinals to standard format
-                ordinal_map = {"premier": "1er", "première": "1ère", "unique": "unique", 
-                               "deux": "2", "trois": "3", "quatre": "4", "cinq": "5",
-                               "six": "6", "sept": "7", "huit": "8", "neuf": "9", "dix": "10"}
+                ordinal_map = {
+                    "premier": "1er", "première": "1ère", "premi\u00e8re": "1ère",
+                    "deuxième": "2ème", "deuxi\u00e8me": "2ème", "second": "2ème", "seconde": "2ème",
+                    "troisième": "3ème", "troisi\u00e8me": "3ème",
+                    "quatrième": "4ème", "quatri\u00e8me": "4ème",
+                    "cinquième": "5ème", "cinqui\u00e8me": "5ème",
+                    "sixième": "6ème", "sixi\u00e8me": "6ème",
+                    "septième": "7ème", "septi\u00e8me": "7ème",
+                    "huitième": "8ème", "huiti\u00e8me": "8ème",
+                    "neuvième": "9ème", "neuvi\u00e8me": "9ème",
+                    "dixième": "10ème", "dixi\u00e8me": "10ème",
+                    "onzième": "11ème", "onzi\u00e8me": "11ème",
+                    "douzième": "12ème", "douzi\u00e8me": "12ème",
+                    "unique": "unique",
+                    "un": "1", "deux": "2", "trois": "3", "quatre": "4", "cinq": "5",
+                    "six": "6", "sept": "7", "huit": "8", "neuf": "9", "dix": "10",
+                    "onze": "11", "douze": "12", "treize": "13", "quatorze": "14", "quinze": "15", "seize": "16"
+                }
                 normalized = ordinal_map.get(art_id.lower(), art_id)
                 article_number = f"Article {normalized}"
             else:
