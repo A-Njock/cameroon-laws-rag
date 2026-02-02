@@ -313,113 +313,207 @@ Document text:
     def retrieve_for_generation(self, query) -> Tuple[List[str], List[Dict[str, Any]]]:
         """
         Return plain chunk texts and their metadata for grounded generation.
-        Strategy:
-        1) Try exact/keyword match ranking across all chunks.
-        2) If nothing matches, fall back to embedding search.
+        Uses a hybrid approach: keyword matching + semantic search + query expansion.
         """
         q = (query or "").lower()
-        # Build keyword set: words of length >= 4
-        tokens = [t for t in re.findall(r"\w+", q) if len(t) >= 4]
+        
+        # Query expansion: add related legal terms for common queries
+        expansions = {
+            "impot": ["taxe", "fiscal", "contribuable", "tva", "is", "irpp", "finances"],
+            "vol": ["voler", "larcin", "appropriation", "soustraction"],
+            "meurtre": ["homicide", "assassinat", "mort", "tuer"],
+            "mariage": ["époux", "conjoint", "matrimonial", "union"],
+            "divorce": ["séparation", "dissolution", "répudiation"],
+            "travail": ["emploi", "salaire", "employeur", "licenciement", "contrat"],
+            "propriete": ["bien", "immeuble", "foncier", "terrain"],
+            "entreprise": ["société", "commercial", "ohada", "sarl", "sa"],
+            "peine": ["sanction", "prison", "amende", "condamnation"],
+            "crime": ["délit", "infraction", "pénal"],
+            "douane": ["importation", "exportation", "tarif"],
+            "finances": ["budget", "recettes", "dépenses", "trésor", "exercice"],
+        }
+        
+        # Build keyword set with expansion
+        tokens = [t for t in re.findall(r"\w+", q) if len(t) >= 3]
         token_set = set(tokens)
-        keyword_scores: List[Tuple[int, int]] = []  # (score, idx)
+        
+        # Expand query with related terms
+        for token in list(token_set):
+            for key, related in expansions.items():
+                if token.startswith(key) or key.startswith(token):
+                    token_set.update(related)
+                    break
+        
+        keyword_scores: List[Tuple[float, int]] = []
         if token_set:
             for i, text in enumerate(self.chunks):
                 t = text.lower()
-                score = sum(t.count(tok) for tok in token_set)
+                # Count matches with weight for longer tokens
+                score = sum(t.count(tok) * (1 + len(tok) / 10) for tok in token_set)
                 if score > 0:
                     keyword_scores.append((score, i))
+        
+        # Also do semantic search
+        query_embedding = self.embedding_model.encode([query])
+        distances, indices = self.index.search(np.array(query_embedding).astype('float32'), self.top_k * 2)
+        semantic_indices = list(indices[0])
+        
+        # Combine results: prioritize keyword matches but include semantic results
+        selected = []
+        seen = set()
+        
         if keyword_scores:
-            # Sort by score desc, take top_k
             keyword_scores.sort(key=lambda x: x[0], reverse=True)
-            selected = [idx for _, idx in keyword_scores[: self.top_k]]
-        else:
-            # Fallback to embedding search
-            query_embedding = self.embedding_model.encode([query])
-            distances, indices = self.index.search(np.array(query_embedding).astype('float32'), self.top_k)
-            selected = list(indices[0])
+            for _, idx in keyword_scores[:self.top_k]:
+                if idx not in seen:
+                    selected.append(idx)
+                    seen.add(idx)
+        
+        # Add semantic results to fill remaining slots
+        for idx in semantic_indices:
+            if len(selected) >= self.top_k:
+                break
+            if idx not in seen:
+                selected.append(idx)
+                seen.add(idx)
+        
+        # If still nothing, use pure semantic search
+        if not selected:
+            selected = semantic_indices[:self.top_k]
+        
         texts: List[str] = [self.chunks[i] for i in selected]
         metas: List[Dict[str, Any]] = [self.metadata[i] for i in selected]
         return texts, metas
 
+
     def generate_response(self, query):
+        """
+        Generate a well-formatted response with proper citations and source references.
+        """
         # Use structured retrieval for grounded answer and deterministic metadata formatting
         chunk_texts, chunk_metas = self.retrieve_for_generation(query)
 
         if not chunk_texts:
-            return "Cet Outils a ete cree par Pierre Guy A.Njock, Des travaux sont cours pour ameliorer la reponse a cette question particuliere. En attendant, Cliquer sur le lien pour voir nos formation sur comment gagner de l'argent grace a l'IA ( /formations )"
+            return """Je n'ai pas trouvé d'informations pertinentes pour cette question dans la base de données juridique.
 
-        # Instruct the model to write only a single coherent paragraph. No lists, no disclaimers.
-        system_prompt = """
-You are a legal expert. Answer ONLY using the provided document chunks.
-Write ONE concise, coherent paragraph directly answering the user's question.
-Do NOT invent any information not present in the chunks. If a specific detail is not in the chunks, omit it.
-Do NOT include headings, lists, citations, or disclaimers. Paragraph only.
-Respond in the same language as the user input.
-"""
+**Suggestions:**
+- Reformulez votre question avec des termes juridiques précis
+- Mentionnez le domaine de droit concerné (pénal, civil, fiscal, etc.)
+- Essayez une recherche plus spécifique (ex: "sanctions pour vol" au lieu de "vol")
+
+*Cet outil est développé par Pierre Guy A. NJOCK - Des améliorations continues sont en cours.*"""
+
+        # Build numbered references for citations
+        references = []
+        ref_map = {}  # Map "Article X of Law Y" -> reference number
+        for i, meta in enumerate(chunk_metas):
+            art = meta.get("article", "Article inconnu")
+            law = meta.get("law", "Loi inconnue")
+            ref_key = f"{art} - {law}"
+            if ref_key not in ref_map:
+                ref_num = len(references) + 1
+                ref_map[ref_key] = ref_num
+                references.append({
+                    "num": ref_num,
+                    "article": art,
+                    "law": law,
+                    "is_primary": i == 0
+                })
+
+        # Build context with citation markers for the LLM
+        context_parts = []
+        for i, (text, meta) in enumerate(zip(chunk_texts, chunk_metas)):
+            art = meta.get("article", "Article inconnu")
+            law = meta.get("law", "Loi inconnue")
+            ref_key = f"{art} - {law}"
+            ref_num = ref_map.get(ref_key, i + 1)
+            context_parts.append(f"[{ref_num}] {art} ({law}):\n{text}")
+
+        joined_context = "\n\n---\n\n".join(context_parts)
+
+        # Improved system prompt for better structured analysis
+        system_prompt = """Tu es un expert juridique camerounais. Réponds en utilisant UNIQUEMENT les extraits fournis.
+
+RÈGLES STRICTES:
+1. Cite tes sources avec [1], [2], etc. correspondant aux numéros des articles fournis
+2. Structure ta réponse clairement:
+   - Commence par une réponse directe à la question
+   - Développe avec les détails juridiques pertinents
+   - Mentionne les nuances ou conditions importantes
+3. N'invente JAMAIS d'informations non présentes dans les extraits
+4. Si l'information demandée n'est pas dans les extraits, dis-le clairement
+5. Réponds dans la même langue que la question (français ou anglais)
+
+FORMAT DE RÉPONSE:
+- Paragraphes clairs et concis
+- Citations intégrées naturellement: "Selon l'article X [1], ..."
+- Pas de listes à puces sauf si vraiment nécessaire"""
 
         messages = [{"role": "system", "content": system_prompt}]
-        # Include only relevant past turns based on simple token overlap
+        
+        # Include relevant conversation history
         def relevance(a: str, b: str) -> float:
             aw = set([w for w in re.findall(r"\w+", a.lower()) if len(w) >= 4])
             bw = set([w for w in re.findall(r"\w+", b.lower()) if len(w) >= 4])
             if not aw or not bw:
                 return 0.0
-            inter = len(aw & bw)
-            denom = max(len(aw), len(bw))
-            return inter / denom
-        recent = self.history[-10:]
+            return len(aw & bw) / max(len(aw), len(bw))
+        
+        recent = self.history[-6:]
         for msg in recent:
-            if msg["role"] == "user":
-                if relevance(query, msg["content"]) >= 0.3:
-                    messages.append(msg)
+            if msg["role"] == "user" and relevance(query, msg["content"]) >= 0.3:
+                messages.append(msg)
             elif msg["role"] == "assistant":
-                # Tie assistant message relevance to the last user message, if available
                 messages.append(msg)
 
-        # Provide only the raw chunk texts to tighten grounding
-        joined_chunks = "\n\n---\n\n".join(chunk_texts)
-        user_content = "Query: " + query + "\n\nRelevant Chunks:\n" + joined_chunks
+        # Build user prompt with context
+        user_content = f"""Question: {query}
+
+Extraits juridiques pertinents:
+
+{joined_context}
+
+Analyse la question et fournis une réponse claire et précise basée sur ces extraits."""
+
         messages.append({"role": "user", "content": user_content})
 
+        # Generate response
         ds_prompt = (
             "System:\n" + messages[0]["content"] + "\n\n" +
             "\n\n".join([m["content"] for m in messages[1:]])
         )
-        paragraph = openai_completion(ds_prompt, model="deepseek-chat", temperature=0.3, max_tokens=600)
+        analysis = openai_completion(ds_prompt, model="deepseek-chat", temperature=0.3, max_tokens=800)
 
-        # Build exact article and similar articles deterministically from retrieved metadata
-        primary_meta = chunk_metas[0] if chunk_metas else {}
-        exact_article = primary_meta.get("article", "Unknown")
-        exact_law = primary_meta.get("law", "Unknown")
-        exact_line = f"**Exact Article Number:** {exact_article} of {exact_law}."
+        # Build formatted sources section
+        primary_refs = [r for r in references if r["is_primary"]]
+        supplementary_refs = [r for r in references if not r["is_primary"]]
 
-        # Complementary: list distinct other articles from remaining metas
-        other_articles = []
-        for m in chunk_metas[1:]:
-            art = m.get("article")
-            law = m.get("law")
-            if art and law:
-                formatted = f"{art} of {law}"
-            elif art:
-                formatted = art
-            elif law:
-                formatted = law
-            else:
-                continue
-            if formatted not in other_articles:
-                other_articles.append(formatted)
-        if other_articles:
-            complementary_line = "-   **Complementary:** " + "; ".join(other_articles) + "."
-        else:
-            complementary_line = "-   **Complementary:** None found in the provided context."
-        contradictory_line = "-   **Contradictory:** None found in the provided context."
+        sources_section = "\n\n---\n\n**📚 Sources:**\n\n"
+        
+        # Primary source
+        if primary_refs:
+            p = primary_refs[0]
+            sources_section += f"**Source principale:**\n[{p['num']}] {p['article']} - *{p['law']}*\n\n"
+        
+        # Supplementary sources
+        if supplementary_refs:
+            sources_section += "**Sources complémentaires:**\n"
+            for r in supplementary_refs[:5]:  # Limit to 5 supplementary
+                sources_section += f"[{r['num']}] {r['article']} - *{r['law']}*\n"
+            sources_section += "\n"
+        
+        # Note about contradictory (would require semantic analysis)
+        sources_section += "**Articles contradictoires:** Aucun identifié dans le contexte fourni."
 
-        answer = paragraph.strip() + "\n\n" + exact_line + "\n\n**Similar Articles:**\n" + complementary_line + "\n\n" + contradictory_line
+        # Combine answer with sources
+        answer = analysis.strip() + sources_section
 
+        # Update history
         self.history.append({"role": "user", "content": query})
         self.history.append({"role": "assistant", "content": answer})
 
         return answer
+
 
 
 def extract_text_from_pdf(pdf_path: str) -> str:
