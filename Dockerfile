@@ -28,7 +28,4 @@ COPY index_file.meta.chunks.json .
 
 EXPOSE 8000
 
-HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"
-
 CMD ["python", "api_server.py"]
