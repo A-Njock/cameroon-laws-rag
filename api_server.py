@@ -90,11 +90,12 @@ async def startup_event():
         )
     
     print("Loading RAG system...")
+    from RAG import EMBEDDING_MODEL
     rag_system = RobustRAGSystem.from_index(
         index_path=index_path,
         metadata_path=metadata_path,
         chunks_path=chunks_path,
-        embedding_model='all-MiniLM-L6-v2',
+        embedding_model=EMBEDDING_MODEL,
         top_k=5
     )
     print(f"✓ RAG system loaded with {len(rag_system.chunks)} chunks")
