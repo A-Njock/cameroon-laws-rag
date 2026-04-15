@@ -13,6 +13,9 @@ RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/wh
 COPY requirements_docker.txt .
 RUN pip install --no-cache-dir -r requirements_docker.txt
 
+# Pre-download the embedding model so startup doesn't need HuggingFace access
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('intfloat/multilingual-e5-base')"
+
 # Application code
 COPY RAG.py .
 COPY api_server.py .
