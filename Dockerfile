@@ -1,43 +1,31 @@
-# Use Python 3.11 slim image
+# Railway / Docker deployment
 FROM python:3.11-slim
 
-# Set working directory
 WORKDIR /app
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    && rm -rf /var/lib/apt/lists/*
+# System deps
+RUN apt-get update && apt-get install -y build-essential && rm -rf /var/lib/apt/lists/*
 
-# Install CPU-only PyTorch first (Significant size reduction)
+# Install CPU-only PyTorch first (avoids pulling the CUDA build)
 RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
 
-# Copy requirements
-COPY requirements_docker.txt .
-
 # Install Python dependencies
-# Note: sentence-transformers will use the already installed torch
+COPY requirements_docker.txt .
 RUN pip install --no-cache-dir -r requirements_docker.txt
 
-# Copy application code
+# Application code
 COPY RAG.py .
-COPY build_index.py .
 COPY api_server.py .
+COPY build_index.py .
 
-# Copy pre-built FAISS index (built in Colab)
+# Pre-built FAISS index (run build_index_single.py or build_index.py locally first)
 COPY index_file.index .
 COPY index_file.meta.json .
 COPY index_file.meta.chunks.json .
 
-# Copy only necessary PDF source files (Avoid copying huge unrelated folders if any)
-COPY *.pdf ./
-
-# Expose port
 EXPOSE 8000
 
-# Health check - Allow 15 minutes for index building on first run
-HEALTHCHECK --interval=30s --timeout=10s --start-period=900s --retries=3 \
-    CMD python -c "import requests; requests.get('http://localhost:8000/health')"
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"
 
-# Build index if not exists, then run API
-CMD if [ ! -f "index_file.index" ]; then python build_index.py; fi && python api_server.py
+CMD ["python", "api_server.py"]
