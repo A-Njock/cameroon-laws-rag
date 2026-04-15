@@ -72,18 +72,18 @@ def build_single(pdf_path: str) -> None:
     index.add(np.array(embeddings).astype("float32"))
 
     # Save
-    print(f"\nSaving index → {index_path}")
+    print(f"\nSaving index -> {index_path}")
     faiss.write_index(index, index_path)
 
-    print(f"Saving metadata → {metadata_path}")
+    print(f"Saving metadata -> {metadata_path}")
     with open(metadata_path, "w", encoding="utf-8") as f:
         json.dump(rag.metadata, f, ensure_ascii=False, indent=2)
 
-    print(f"Saving chunks → {chunks_path}")
+    print(f"Saving chunks -> {chunks_path}")
     with open(chunks_path, "w", encoding="utf-8") as f:
         json.dump(rag.chunks, f, ensure_ascii=False)
 
-    print(f"\n✓ Done. {len(rag.chunks)} chunks indexed from 1 document.")
+    print(f"\nDone. {len(rag.chunks)} chunks indexed from 1 document.")
     print("  Deploy to Railway and test. Replace with full corpus later.")
 
 
