@@ -204,10 +204,11 @@ async def list_laws():
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 8000))
+    # Railway networking is configured for port 8000 (matches EXPOSE 8000 in Dockerfile).
+    # Do NOT read $PORT — Railway injects PORT=8080 which conflicts with the routing config.
     uvicorn.run(
         "api_server:app",
         host="0.0.0.0",
-        port=port,
+        port=8000,
         reload=False
     )
