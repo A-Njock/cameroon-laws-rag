@@ -31,7 +31,7 @@ TOP_K_DEFAULT   = 5
 RRF_K           = 60   # RRF constant — higher = less penalty for low ranks
 
 # DeepSeek configuration
-api_key_deepseek = os.environ.get("DEEPSEEK_API_KEY")
+api_key_deepseek = (os.environ.get("DEEPSEEK_API_KEY") or "").strip()
 base_url_deepseek = "https://api.deepseek.com/v1"
 
 
