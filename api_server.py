@@ -63,6 +63,7 @@ rag_system: Optional[RobustRAGSystem] = None
 class QueryRequest(BaseModel):
     question: str
     top_k: Optional[int] = 5
+    history: Optional[List[Dict[str, Any]]] = []
 
 
 class QueryResponse(BaseModel):
@@ -137,7 +138,7 @@ async def query_laws_api(request: QueryRequest):
         # Generate answer and get metadatas in ONE call
         # Note: we use request.question for /query and request.query for legacy /ask if needed
         # But we'll use a unified QueryRequest model for now.
-        answer, metadatas = rag_system.generate_response(request.question)
+        answer, metadatas = rag_system.generate_response(request.question, history=request.history)
         
         sources = []
         seen = set()

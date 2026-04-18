@@ -276,21 +276,19 @@ class RobustRAGSystem:
     # Generation
     # ------------------------------------------------------------------
 
-    def generate_response(self, query: str) -> Tuple[str, List[Dict]]:
+    def generate_response(self, query: str, history: List[Dict] = None) -> Tuple[str, List[Dict]]:
         """Synchronous: retrieve + generate + return (answer, sources)."""
         chunk_texts, chunk_metas = self.retrieve_for_generation(query)
         if not chunk_texts:
             return self._get_empty_result(), []
 
-        messages, references = self._prepare_llm_input(query, chunk_texts, chunk_metas)
+        messages, references = self._prepare_llm_input(query, chunk_texts, chunk_metas, history=history)
         ds_prompt = ("System:\n" + messages[0]["content"] + "\n\n"
                      + "\n\n".join(m["content"] for m in messages[1:]))
         analysis = openai_completion(ds_prompt, model="deepseek-chat",
                                      temperature=0.3, max_tokens=800)
 
-        answer = analysis.strip() + self._format_sources_section(references)
-        self.history.append({"role": "user", "content": query})
-        self.history.append({"role": "assistant", "content": answer})
+        answer = analysis.strip()
         return answer, chunk_metas
 
     def generate_response_stream(self, query: str):
@@ -300,7 +298,7 @@ class RobustRAGSystem:
             yield self._get_empty_result()
             return
 
-        messages, references = self._prepare_llm_input(query, chunk_texts, chunk_metas)
+        messages, _ = self._prepare_llm_input(query, chunk_texts, chunk_metas)
         ds_prompt = ("System:\n" + messages[0]["content"] + "\n\n"
                      + "\n\n".join(m["content"] for m in messages[1:]))
 
@@ -319,16 +317,11 @@ class RobustRAGSystem:
             full_text += delta
             yield delta
 
-        sources_text = self._format_sources_section(references)
-        yield sources_text
-        self.history.append({"role": "user", "content": query})
-        self.history.append({"role": "assistant", "content": full_text + sources_text})
-
     # ------------------------------------------------------------------
     # Prompt building
     # ------------------------------------------------------------------
 
-    def _prepare_llm_input(self, query, chunk_texts, chunk_metas):
+    def _prepare_llm_input(self, query, chunk_texts, chunk_metas, history: List[Dict] = None):
         references = []
         ref_map = {}
         context_parts = []
@@ -347,7 +340,8 @@ class RobustRAGSystem:
         joined_context = "\n\n---\n\n".join(context_parts)
         messages = [{"role": "system", "content": self._get_system_prompt()}]
 
-        for msg in self.history[-6:]:
+        active_history = history if history is not None else self.history
+        for msg in active_history[-6:]:
             messages.append(msg)
 
         user_content = (
