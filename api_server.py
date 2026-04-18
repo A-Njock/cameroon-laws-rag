@@ -168,6 +168,39 @@ async def query_laws_api(request: QueryRequest):
 
 from fastapi.responses import StreamingResponse
 
+
+@app.get("/debug-deepseek")
+async def debug_deepseek():
+    """Diagnostic: test DeepSeek connectivity from Railway"""
+    import traceback as tb
+    import os
+    result = {
+        "key_set": bool(os.environ.get("DEEPSEEK_API_KEY")),
+        "key_prefix": (os.environ.get("DEEPSEEK_API_KEY") or "")[:8] + "...",
+        "base_url": "https://api.deepseek.com/v1",
+    }
+    try:
+        from openai import OpenAI
+        client = OpenAI(
+            api_key=os.environ.get("DEEPSEEK_API_KEY"),
+            base_url="https://api.deepseek.com/v1",
+            timeout=10.0,
+        )
+        resp = client.chat.completions.create(
+            model="deepseek-chat",
+            messages=[{"role": "user", "content": "Say OK"}],
+            max_tokens=5,
+        )
+        result["status"] = "success"
+        result["response"] = resp.choices[0].message.content
+    except Exception as e:
+        result["status"] = "error"
+        result["error_type"] = type(e).__name__
+        result["error"] = str(e)
+        result["traceback"] = tb.format_exc()
+    return result
+
+
 @app.post("/stream")
 async def stream_laws(request: QueryRequest):
     """
