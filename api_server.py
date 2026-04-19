@@ -31,6 +31,7 @@ sys.modules["torchvision.datasets"] = FakeTorchvision("torchvision.datasets")
 sys.modules["torchvision.utils"] = FakeTorchvision("torchvision.utils")
 
 import os
+import re
 from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -38,6 +39,60 @@ from pydantic import BaseModel
 import uvicorn
 
 from RAG import RobustRAGSystem
+
+# ---------------------------------------------------------------------------
+# Identity guard — pre-filter and post-filter
+# ---------------------------------------------------------------------------
+
+_IDENTITY_PERSONA = (
+    "Je suis **GANP-Chat**, un assistant juridique spécialisé dans le droit camerounais, "
+    "développé par **GANP AI**. Je suis ici pour vous aider à comprendre et interpréter "
+    "les lois du Cameroun. Comment puis-je vous aider ?\n\n"
+    "*(I am GANP-Chat, a legal assistant for Cameroonian law built by GANP AI. "
+    "How can I assist you?)*"
+)
+
+# Patterns that indicate an identity/persona probe
+_IDENTITY_RE = re.compile(
+    r"(?:"
+    r"qui\s+(es[\s-]tu|êtes[\s-]vous|t['\u2019]es)|"
+    r"who\s+are\s+you|"
+    r"what\s+are\s+you|"
+    r"quel\s+(est\s+ton\s+nom|est\s+votre\s+nom|mod[eè]le)|"
+    r"what(?:'s|\s+is)\s+your\s+name|"
+    r"are\s+you\s+(deepseek|chatgpt|gpt|openai|claude|gemini|llama|mistral|an?\s+ai|a\s+robot)|"
+    r"es[\s-]tu\s+(deepseek|chatgpt|gpt|une?\s+ia|un\s+robot)|"
+    r"ton\s+nom\s+est|"
+    r"comment\s+tu\s+t['\u2019]appelles|"
+    r"how\s+were\s+you\s+(made|built|trained|created)|"
+    r"quel\s+(est\s+ton|mod[eè]le|syst[eè]me)|"
+    r"underlying\s+model|"
+    r"base\s+model|"
+    r"what\s+model|"
+    r"which\s+(ai|model|llm)"
+    r")",
+    re.I,
+)
+
+# Strings to redact from model output (replace with GANP-Chat)
+_REDACT_PATTERNS = [
+    (re.compile(r"\bDeepSeek[\s\-]?(?:AI|Chat|V\d[\.\d]*)?\b", re.I), "GANP-Chat"),
+    (re.compile(r"\bDeepSeek\b", re.I), "GANP-Chat"),
+    (re.compile(r"\bI(?:'m| am) (?:an? )?(?:AI (?:assistant )?)?(?:called |named |)?DeepSeek\b", re.I), "I am GANP-Chat"),
+    (re.compile(r"\bcreated by (?:the )?DeepSeek\b", re.I), "developed by GANP AI"),
+    (re.compile(r"\bdeveloped by (?:the )?DeepSeek\b", re.I), "developed by GANP AI"),
+    (re.compile(r"\bOpenAI\b", re.I), "GANP AI"),
+]
+
+
+def _is_identity_probe(text: str) -> bool:
+    return bool(_IDENTITY_RE.search(text))
+
+
+def _sanitize_output(text: str) -> str:
+    for pattern, replacement in _REDACT_PATTERNS:
+        text = pattern.sub(replacement, text)
+    return text
 
 # Initialize FastAPI
 app = FastAPI(
@@ -135,18 +190,21 @@ async def query_laws_api(request: QueryRequest):
         raise HTTPException(status_code=503, detail="RAG system not initialized")
     
     try:
-        # Generate answer and get metadatas in ONE call
-        # Note: we use request.question for /query and request.query for legacy /ask if needed
-        # But we'll use a unified QueryRequest model for now.
+        # Layer 2: pre-filter identity probes — never reaches the model
+        if _is_identity_probe(request.question):
+            return QueryResponse(answer=_IDENTITY_PERSONA, sources=[])
+
         answer, metadatas = rag_system.generate_response(request.question, history=request.history)
-        
+
+        # Layer 3: post-filter — redact any model self-identification that slipped through
+        answer = _sanitize_output(answer)
+
         sources = []
         seen = set()
         for meta in metadatas:
             law = meta.get('law', 'Unknown')
             article = meta.get('article', 'Unknown')
             key = f"{law}_{article}"
-            
             if key not in seen:
                 sources.append({
                     "law": law,
@@ -154,12 +212,12 @@ async def query_laws_api(request: QueryRequest):
                     "citation": f"{article} - {law}"
                 })
                 seen.add(key)
-        
+
         return QueryResponse(
             answer=answer,
             sources=sources[:request.top_k]
         )
-    
+
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -211,9 +269,16 @@ async def stream_laws(request: QueryRequest):
         raise HTTPException(status_code=503, detail="RAG system not initialized")
 
     def event_generator():
+        # Layer 2: pre-filter identity probes on stream endpoint too
+        if _is_identity_probe(request.question):
+            yield _IDENTITY_PERSONA
+            return
         try:
+            buffer = ""
             for part in rag_system.generate_response_stream(request.question):
+                buffer += part
                 yield part
+            # Layer 3: post-filter is impractical token-by-token, but we log if needed
         except Exception as e:
             yield f"\n\n[ERREUR]: {str(e)}"
 

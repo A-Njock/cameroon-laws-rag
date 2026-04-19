@@ -8,7 +8,7 @@ Go to: https://github.com/new
 
 ## 2. Push Code
 ```bash
-cd "e:\YORK.A\ME\KEMET AI\code-github\LOIS CAMEROUN"
+cd "e:\YORK.A\ME\KEMET AI\code-github\RAG_BUILDING"
 git remote add origin https://github.com/YOUR_USERNAME/cameroon-laws-rag.git
 git branch -M main
 git push -u origin main

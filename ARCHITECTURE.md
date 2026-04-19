@@ -172,7 +172,7 @@ The FAISS index must be rebuilt whenever:
 - The embedding model changes
 
 ```bash
-cd "LOIS CAMEROUN"
+cd "RAG_BUILDING"
 python build_index.py
 ```
 
