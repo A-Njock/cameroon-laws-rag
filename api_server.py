@@ -114,11 +114,16 @@ app.add_middleware(
 rag_system: Optional[RobustRAGSystem] = None
 
 
+# Feedback CSV path (Railway filesystem — ephemeral across redeploys)
+FEEDBACK_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "feedback.csv")
+
+
 # Request/Response models
 class QueryRequest(BaseModel):
     question: str
     top_k: Optional[int] = 5
     history: Optional[List[Dict[str, Any]]] = []
+    language: Optional[str] = "fr"   # "fr" or "en"
 
 
 class QueryResponse(BaseModel):
@@ -129,6 +134,13 @@ class QueryResponse(BaseModel):
 class HealthResponse(BaseModel):
     status: str
     documents_indexed: int
+
+
+class FeedbackRequest(BaseModel):
+    question: str
+    answer: str
+    rating: str          # "up" or "down"
+    language: Optional[str] = "fr"
 
 
 @app.on_event("startup")
@@ -194,7 +206,11 @@ async def query_laws_api(request: QueryRequest):
         if _is_identity_probe(request.question):
             return QueryResponse(answer=_IDENTITY_PERSONA, sources=[])
 
-        answer, metadatas = rag_system.generate_response(request.question, history=request.history)
+        answer, metadatas = rag_system.generate_response(
+            request.question,
+            history=request.history,
+            language=request.language or "fr",
+        )
 
         # Layer 3: post-filter — redact any model self-identification that slipped through
         answer = _sanitize_output(answer)
@@ -225,7 +241,7 @@ async def query_laws_api(request: QueryRequest):
 
 
 
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
 
 
 @app.get("/debug-deepseek")
@@ -284,6 +300,40 @@ async def stream_laws(request: QueryRequest):
 
     return StreamingResponse(event_generator(), media_type="text/plain")
 
+
+
+@app.post("/feedback")
+async def submit_feedback(req: FeedbackRequest):
+    """Save user rating. Thumbs-down entries are written to feedback.csv."""
+    import csv
+    from datetime import datetime, timezone
+    if req.rating != "down":
+        return {"status": "ok", "saved": False}
+
+    file_exists = os.path.exists(FEEDBACK_CSV)
+    with open(FEEDBACK_CSV, "a", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        if not file_exists:
+            writer.writerow(["timestamp", "language", "question", "answer"])
+        writer.writerow([
+            datetime.now(timezone.utc).isoformat(),
+            req.language,
+            req.question,
+            req.answer.replace("\n", " "),
+        ])
+    return {"status": "ok", "saved": True}
+
+
+@app.get("/feedback/export")
+async def export_feedback():
+    """Download the thumbs-down feedback CSV."""
+    if not os.path.exists(FEEDBACK_CSV):
+        raise HTTPException(status_code=404, detail="No feedback recorded yet.")
+    return FileResponse(
+        FEEDBACK_CSV,
+        media_type="text/csv",
+        filename="ganpchat_feedback.csv",
+    )
 
 
 @app.get("/laws", response_model=List[str])
