@@ -291,7 +291,7 @@ async def stream_laws(request: QueryRequest):
             return
         try:
             buffer = ""
-            for part in rag_system.generate_response_stream(request.question):
+            for part in rag_system.generate_response_stream(request.question, request.language or "fr"):
                 buffer += part
                 yield part
             # Layer 3: post-filter is impractical token-by-token, but we log if needed

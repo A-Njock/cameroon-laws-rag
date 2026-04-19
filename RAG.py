@@ -383,11 +383,11 @@ class RobustRAGSystem:
         answer = analysis.strip()
         return answer, chunk_metas
 
-    def generate_response_stream(self, query: str):
+    def generate_response_stream(self, query: str, language: str = "fr"):
         """Generator that streams response tokens in real-time."""
         chunk_texts, chunk_metas = self.retrieve_for_generation(query)
         if not chunk_texts:
-            yield self._get_empty_result()
+            yield self._get_empty_result(language)
             return
 
         messages, _ = self._prepare_llm_input(query, chunk_texts, chunk_metas)
