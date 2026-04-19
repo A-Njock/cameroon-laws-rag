@@ -174,6 +174,8 @@ class RobustRAGSystem:
 
         instance.embeddings = None
         instance._build_bm25()
+        # Pre-compute accent-stripped chunks once — reused by every phrase search call
+        instance._chunks_norm = [strip_accents(c) for c in instance.chunks]
 
         # Load amendment graph (law_number → list of amending law_numbers)
         instance.law_graph = {}
@@ -290,9 +292,9 @@ class RobustRAGSystem:
         for i in range(len(words) - 2):
             phrases.append(f"{words[i]} {words[i+1]} {words[i+2]}")
 
+        chunks_norm = getattr(self, "_chunks_norm", None) or [strip_accents(c) for c in self.chunks]
         scored: List[Tuple[int, int]] = []
-        for idx, chunk in enumerate(self.chunks):
-            chunk_norm = strip_accents(chunk)
+        for idx, chunk_norm in enumerate(chunks_norm):
             score = sum(1 for ph in phrases if ph in chunk_norm)
             if score > 0:
                 scored.append((idx, score))
