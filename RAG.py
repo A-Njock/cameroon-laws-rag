@@ -27,9 +27,9 @@ logger = logging.getLogger(__name__)
 # --- Configuration ---
 EMBEDDING_MODEL = "intfloat/multilingual-e5-base"  # 768-dim, French + English aware
 EMBEDDING_DIM   = 768
-TOP_K_DEFAULT   = 5
+TOP_K_DEFAULT   = 8
 RRF_K           = 60   # RRF constant — higher = less penalty for low ranks
-RRF_OOS_THRESHOLD = 0.004  # max RRF score below this → out-of-scope signal
+RRF_OOS_THRESHOLD = 0.003  # max RRF score below this → out-of-scope signal
 
 # Pre-compiled: "article 12 de la loi 2016-007" or "article 3 du décret 2019/001"
 _DIRECT_ART_RE = re.compile(
@@ -283,7 +283,7 @@ class RobustRAGSystem:
         if direct:
             return direct
 
-        n = self.top_k * 4   # over-fetch before fusion
+        n = self.top_k * 6   # over-fetch before fusion — wider net improves recall
 
         dense_ranking = self._dense_retrieve(query, n)
         bm25_ranking  = self._bm25_retrieve(query, n)

@@ -121,7 +121,7 @@ FEEDBACK_CSV = os.path.join(os.path.dirname(os.path.abspath(__file__)), "feedbac
 # Request/Response models
 class QueryRequest(BaseModel):
     question: str
-    top_k: Optional[int] = 5
+    top_k: Optional[int] = 8
     history: Optional[List[Dict[str, Any]]] = []
     language: Optional[str] = "fr"   # "fr" or "en"
 
