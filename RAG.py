@@ -65,6 +65,16 @@ def normalize_text_for_patterns(text: str) -> str:
     return (text or "").replace("\u00A0", " ").replace("Nº", "N°").replace("No", "N°")
 
 
+import unicodedata as _ud
+
+def strip_accents(s: str) -> str:
+    """Remove diacritics so 'imperatif' matches 'impératif', etc."""
+    return "".join(
+        c for c in _ud.normalize("NFD", s.lower())
+        if _ud.category(c) != "Mn"
+    )
+
+
 def infer_law_reference(document_text: str, filename: str | None) -> str:
     if filename:
         base = os.path.splitext(os.path.basename(filename))[0]
@@ -196,12 +206,12 @@ class RobustRAGSystem:
         logger.info(f"✓ FAISS index built: {self.index.ntotal} vectors, dim={self.faiss_dim}")
 
     def _build_bm25(self):
-        """Build BM25 index over all chunks."""
+        """Build BM25 index over all chunks (accent-stripped for accent-agnostic matching)."""
         if not HAS_BM25:
             self.bm25 = None
             logger.warning("BM25 disabled (rank_bm25 not installed)")
             return
-        tokenized = [re.findall(r"\w+", c.lower()) for c in self.chunks]
+        tokenized = [re.findall(r"\w+", strip_accents(c)) for c in self.chunks]
         self.bm25 = BM25Okapi(tokenized)
         logger.info(f"✓ BM25 index built: {len(self.chunks)} documents")
 
@@ -223,10 +233,10 @@ class RobustRAGSystem:
         return [int(i) for i in indices[0] if i >= 0]
 
     def _bm25_retrieve(self, query: str, n: int) -> List[int]:
-        """BM25 keyword retrieval."""
+        """BM25 keyword retrieval (accent-stripped to match index)."""
         if not self.bm25:
             return []
-        tokens = re.findall(r"\w+", query.lower())
+        tokens = re.findall(r"\w+", strip_accents(query))
         scores = self.bm25.get_scores(tokens)
         ranked = np.argsort(scores)[::-1]
         return [int(i) for i in ranked[:n]]
@@ -257,31 +267,23 @@ class RobustRAGSystem:
 
     def _exact_phrase_search(self, query: str, n: int) -> List[int]:
         """
-        Find chunks that contain exact bigrams/trigrams from the query.
-        This is the strongest signal for specific legal concepts (e.g. 'mandat impératif')
-        that BM25 misses because it scores individual tokens independently.
+        Find chunks containing exact bigrams/trigrams from the query.
+        Uses accent-stripping so 'imperatif' matches 'impératif', etc.
+        This fixes the core recall gap: BM25 scores individual tokens, so a
+        law with 'mandat' 20× outranks one with 'mandat impératif' once.
         """
-        import unicodedata
-
-        def norm(s: str) -> str:
-            return unicodedata.normalize("NFC", s.lower())
-
         _STOP = {
             "dans", "avec", "pour", "sur", "par", "des", "les", "une", "est",
             "que", "qui", "pas", "mais", "comme", "tout", "cette", "sont",
             "cest", "quoi", "what", "the", "and", "for", "that", "this",
-            "with", "from", "vous", "vous", "leur", "leurs", "quel", "quelle",
+            "with", "from", "leur", "leurs", "quel", "quelle", "vous",
         }
-        q = norm(query)
-        words = [
-            w for w in re.findall(r"[a-zàâäéèêëîïôùûüÿœæç]+", q)
-            if len(w) > 2 and w not in _STOP
-        ]
+        q = strip_accents(query)
+        words = [w for w in re.findall(r"[a-z]+", q) if len(w) > 2 and w not in _STOP]
 
         if len(words) < 2:
             return []
 
-        # Build all bigrams and trigrams
         phrases: List[str] = []
         for i in range(len(words) - 1):
             phrases.append(f"{words[i]} {words[i+1]}")
@@ -290,7 +292,7 @@ class RobustRAGSystem:
 
         scored: List[Tuple[int, int]] = []
         for idx, chunk in enumerate(self.chunks):
-            chunk_norm = norm(chunk)
+            chunk_norm = strip_accents(chunk)
             score = sum(1 for ph in phrases if ph in chunk_norm)
             if score > 0:
                 scored.append((idx, score))
@@ -299,7 +301,8 @@ class RobustRAGSystem:
             return []
 
         scored.sort(key=lambda x: -x[1])
-        logger.info(f"Exact phrase search: {len(scored)} chunks matched, top score={scored[0][1]}")
+        logger.info(f"Phrase search: {len(scored)} matches, top={scored[0][1]}, "
+                    f"law='{self.metadata[scored[0][0]].get('law','?')}'")
         return [idx for idx, _ in scored[:n]]
 
     def _rrf_fusion(self, rankings: List[List[int]],
