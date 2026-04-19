@@ -10,8 +10,8 @@ RUN apt-get update && apt-get install -y build-essential && rm -rf /var/lib/apt/
 RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
 
 # Install Python dependencies
-COPY requirements_docker.txt .
-RUN pip install --no-cache-dir -r requirements_docker.txt
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Pre-download the embedding model so startup doesn't need HuggingFace access
 RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('intfloat/multilingual-e5-base')"
