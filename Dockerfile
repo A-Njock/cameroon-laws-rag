@@ -19,12 +19,13 @@ RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTr
 # Application code
 COPY RAG.py .
 COPY api_server.py .
-COPY build_index.py .
 
-# Pre-built FAISS index (run build_index_single.py or build_index.py locally first)
+# Pre-built FAISS index + metadata (7356 chunks, built from LOIS_237_CLEAN/)
+# law_graph.json maps base laws -> amending laws for amendment expansion
 COPY index_file.index .
 COPY index_file.meta.json .
 COPY index_file.meta.chunks.json .
+COPY law_graph.json .
 
 EXPOSE 8000
 
