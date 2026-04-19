@@ -6,7 +6,7 @@ from openai import OpenAI
 import logging
 import os
 import re
-from typing import List, Tuple, Dict, Any
+from typing import List, Tuple, Dict, Any, Optional
 
 try:
     from rank_bm25 import BM25Okapi
@@ -255,16 +255,66 @@ class RobustRAGSystem:
             logger.warning(f"HyDE failed, skipping: {e}")
             return []
 
-    def _rrf_fusion(self, rankings: List[List[int]]) -> List[Tuple[float, int]]:
+    def _exact_phrase_search(self, query: str, n: int) -> List[int]:
         """
-        Reciprocal Rank Fusion.
-        score(d) = Σ  1 / (RRF_K + rank(d))
+        Find chunks that contain exact bigrams/trigrams from the query.
+        This is the strongest signal for specific legal concepts (e.g. 'mandat impératif')
+        that BM25 misses because it scores individual tokens independently.
+        """
+        import unicodedata
+
+        def norm(s: str) -> str:
+            return unicodedata.normalize("NFC", s.lower())
+
+        _STOP = {
+            "dans", "avec", "pour", "sur", "par", "des", "les", "une", "est",
+            "que", "qui", "pas", "mais", "comme", "tout", "cette", "sont",
+            "cest", "quoi", "what", "the", "and", "for", "that", "this",
+            "with", "from", "vous", "vous", "leur", "leurs", "quel", "quelle",
+        }
+        q = norm(query)
+        words = [
+            w for w in re.findall(r"[a-zàâäéèêëîïôùûüÿœæç]+", q)
+            if len(w) > 2 and w not in _STOP
+        ]
+
+        if len(words) < 2:
+            return []
+
+        # Build all bigrams and trigrams
+        phrases: List[str] = []
+        for i in range(len(words) - 1):
+            phrases.append(f"{words[i]} {words[i+1]}")
+        for i in range(len(words) - 2):
+            phrases.append(f"{words[i]} {words[i+1]} {words[i+2]}")
+
+        scored: List[Tuple[int, int]] = []
+        for idx, chunk in enumerate(self.chunks):
+            chunk_norm = norm(chunk)
+            score = sum(1 for ph in phrases if ph in chunk_norm)
+            if score > 0:
+                scored.append((idx, score))
+
+        if not scored:
+            return []
+
+        scored.sort(key=lambda x: -x[1])
+        logger.info(f"Exact phrase search: {len(scored)} chunks matched, top score={scored[0][1]}")
+        return [idx for idx, _ in scored[:n]]
+
+    def _rrf_fusion(self, rankings: List[List[int]],
+                    weights: Optional[List[float]] = None) -> List[Tuple[float, int]]:
+        """
+        Weighted Reciprocal Rank Fusion.
+        score(d) = Σ  w_i / (RRF_K + rank_i(d))
         Higher scores = better.
         """
         scores: Dict[int, float] = {}
-        for ranking in rankings:
+        if weights is None:
+            weights = [1.0] * len(rankings)
+        for ranking, w in zip(rankings, weights):
             for rank, idx in enumerate(ranking):
-                scores[idx] = scores.get(idx, 0.0) + 1.0 / (RRF_K + rank + 1)
+                scores[idx] = scores.get(idx, 0.0) + w / (RRF_K + rank + 1)
         return sorted(scores.items(), key=lambda x: x[1], reverse=True)
 
     def retrieve_for_generation(self, query: str) -> Tuple[List[str], List[Dict[str, Any]]]:
@@ -285,13 +335,17 @@ class RobustRAGSystem:
 
         n = self.top_k * 6   # over-fetch before fusion — wider net improves recall
 
-        dense_ranking = self._dense_retrieve(query, n)
-        bm25_ranking  = self._bm25_retrieve(query, n)
-        hyde_ranking  = self._hyde_retrieve(query, n)
+        dense_ranking  = self._dense_retrieve(query, n)
+        bm25_ranking   = self._bm25_retrieve(query, n)
+        hyde_ranking   = self._hyde_retrieve(query, n)
+        phrase_ranking = self._exact_phrase_search(query, n)
 
-        # Only include non-empty rankers in fusion
-        active_rankings = [r for r in [dense_ranking, bm25_ranking, hyde_ranking] if r]
-        fused = self._rrf_fusion(active_rankings)
+        # Exact phrase matches get 3× weight — fixes cases where BM25 over-ranks
+        # laws with high token frequency (e.g. Code du Travail) vs. a law that
+        # contains the exact key phrase once (e.g. Constitution Art. 15 "mandat impératif")
+        rankings = [r for r in [dense_ranking, bm25_ranking, hyde_ranking, phrase_ranking] if r]
+        weights  = [1.0, 1.0, 1.0, 3.0][: len(rankings)]
+        fused = self._rrf_fusion(rankings, weights)
 
         # Out-of-scope signal: best score is negligibly low
         if fused and fused[0][1] < RRF_OOS_THRESHOLD:
@@ -546,6 +600,13 @@ For each sub-issue:
 - Do not provide legal advice beyond what is explicitly stated in the law.
 - IMPORTANT: Ensure the final output is clean markdown.
 - Respond in the same language as the user's question (French or English).
+
+BREVITY RULE (strict):
+If the retrieved context does NOT directly address the question asked, your entire response must be ONE sentence:
+"Ce concept n'est pas couvert par les textes juridiques disponibles dans ma base." (FR)
+"This concept is not covered by the legal texts available in my database." (EN)
+Do NOT elaborate. Do NOT discuss related topics. Do NOT speculate. Do NOT provide background.
+A long answer about the wrong topic is worse than a short honest admission of absence.
 
 ────────────────────────────
 8. Quality Control & Safety
