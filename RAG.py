@@ -469,7 +469,10 @@ class RobustRAGSystem:
                 "not covered by the legal texts", "not fully supported by the retrieved")
         if any(marker in answer for marker in _OOS):
             return answer, []
-        return answer, chunk_metas
+        # Only return sources actually cited as [N] in the answer
+        cited_nums = {int(m) for m in re.findall(r'\[(\d+)\]', answer)}
+        cited = [r for r in references if r['num'] in cited_nums] if cited_nums else references
+        return answer, cited
 
     def generate_response_stream(self, query: str, language: str = "fr"):
         """Generator that streams response tokens in real-time."""
