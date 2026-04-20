@@ -6,10 +6,7 @@ WORKDIR /app
 # System deps
 RUN apt-get update && apt-get install -y build-essential && rm -rf /var/lib/apt/lists/*
 
-# Install CPU-only PyTorch first (avoids pulling the CUDA build)
-RUN pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
-
-# Install Python dependencies
+# Install all Python dependencies (requirements.txt uses --extra-index-url for CPU torch)
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
