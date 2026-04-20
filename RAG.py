@@ -1,4 +1,5 @@
 import json
+import difflib
 import numpy as np
 from sentence_transformers import SentenceTransformer
 import faiss
@@ -215,7 +216,9 @@ class RobustRAGSystem:
             return
         tokenized = [re.findall(r"\w+", strip_accents(c)) for c in self.chunks]
         self.bm25 = BM25Okapi(tokenized)
-        logger.info(f"✓ BM25 index built: {len(self.chunks)} documents")
+        # Vocabulary for fuzzy query expansion — tokens ≥4 chars only (avoids short-word noise)
+        self._bm25_vocab = list({t for doc in tokenized for t in doc if len(t) >= 4})
+        logger.info(f"✓ BM25 index built: {len(self.chunks)} documents, vocab={len(self._bm25_vocab)} tokens")
 
     # ------------------------------------------------------------------
     # Retrieval: three rankers + RRF
@@ -234,11 +237,31 @@ class RobustRAGSystem:
         _, indices = self.index.search(q_emb, n)
         return [int(i) for i in indices[0] if i >= 0]
 
+    def _fuzzy_expand(self, tokens: List[str]) -> List[str]:
+        """
+        For each token not found in the BM25 vocabulary, find close matches.
+        Handles typos like 'manda' → 'mandat', 'constittion' → 'constitution'.
+        Only applied to tokens ≥4 chars to avoid false positives on short words.
+        """
+        vocab = getattr(self, "_bm25_vocab", None)
+        if not vocab:
+            return tokens
+        expanded = []
+        for tok in tokens:
+            expanded.append(tok)
+            if len(tok) >= 4 and tok not in vocab:
+                close = difflib.get_close_matches(tok, vocab, n=2, cutoff=0.82)
+                if close:
+                    logger.info(f"Fuzzy expand: '{tok}' → {close}")
+                    expanded.extend(close)
+        return expanded
+
     def _bm25_retrieve(self, query: str, n: int) -> List[int]:
-        """BM25 keyword retrieval (accent-stripped to match index)."""
+        """BM25 keyword retrieval (accent-stripped + fuzzy-expanded to handle typos)."""
         if not self.bm25:
             return []
         tokens = re.findall(r"\w+", strip_accents(query))
+        tokens = self._fuzzy_expand(tokens)
         scores = self.bm25.get_scores(tokens)
         ranked = np.argsort(scores)[::-1]
         return [int(i) for i in ranked[:n]]
@@ -282,6 +305,7 @@ class RobustRAGSystem:
         }
         q = strip_accents(query)
         words = [w for w in re.findall(r"[a-z]+", q) if len(w) > 2 and w not in _STOP]
+        words = self._fuzzy_expand(words)  # 'manda' → adds 'mandat', enabling "mandat imperatif" bigram
 
         if len(words) < 2:
             return []
@@ -440,6 +464,11 @@ class RobustRAGSystem:
                                      temperature=0.3, max_tokens=800)
 
         answer = analysis.strip()
+        # If LLM signals the context doesn't cover the question, suppress sources
+        _OOS = ("Ce concept n'est pas couvert", "This concept is not covered",
+                "not covered by the legal texts", "not fully supported by the retrieved")
+        if any(marker in answer for marker in _OOS):
+            return answer, []
         return answer, chunk_metas
 
     def generate_response_stream(self, query: str, language: str = "fr"):
