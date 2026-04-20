@@ -451,8 +451,32 @@ class RobustRAGSystem:
     # Generation
     # ------------------------------------------------------------------
 
+    # Meta-query patterns: requests about length/format, not new legal questions
+    _META_PATTERNS = re.compile(
+        r'\b(plus (br[eè]ve?|court|concis)|r[eé]sum[eé]|raccourcis|simplifie|'
+        r'shorter|briefer|summarize|more concise|restate|rephrase|reformule|'
+        r'explique (autrement|diff[eé]remment)|en (un mot|deux mots|une phrase))\b',
+        re.IGNORECASE
+    )
+
+    def _is_meta_query(self, query: str) -> bool:
+        """True if query is about rephrasing/length, not a new legal question."""
+        return bool(self._META_PATTERNS.search(query)) and len(query.split()) < 12
+
     def generate_response(self, query: str, history: List[Dict] = None, language: str = "fr") -> Tuple[str, List[Dict]]:
         """Synchronous: retrieve + generate + return (answer, sources)."""
+        # Meta-queries (rephrase/shorten) use history only — no retrieval, no sources
+        if self._is_meta_query(query):
+            active_history = history if history is not None else self.history
+            messages = [{"role": "system", "content": self._get_system_prompt()}]
+            messages.extend(active_history[-6:])
+            messages.append({"role": "user", "content": query})
+            ds_prompt = ("System:\n" + messages[0]["content"] + "\n\n"
+                         + "\n\n".join(m["content"] for m in messages[1:]))
+            answer = openai_completion(ds_prompt, model="deepseek-chat",
+                                       temperature=0.3, max_tokens=400).strip()
+            return answer, []
+
         chunk_texts, chunk_metas = self.retrieve_for_generation(query)
         if not chunk_texts:
             return self._get_empty_result(language), []
